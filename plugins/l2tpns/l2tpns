@@ -1,0 +1,119 @@
+#!/bin/bash
+# -*- sh -*-
+
+: << =cut
+
+=head1 NAME
+
+l2tpns - Monitor L2TP clients connected to a l2tpns server.  This plugin
+graphs the total number of connected clients, and bandwidth usage for each
+client.
+
+=head1 REQUIREMENTS
+
+l2tpns must be running on the local machine, and listen for commands over
+telnet on port 23.
+
+The netcat command ("nc") is needed for this plugin to work.
+
+=head1 AUTHOR
+
+Baptiste Jonglez
+
+=head1 LICENSE
+
+BSD
+
+=head1 MAGIC MARKERS
+
+ #%# family=auto
+ #%# capabilities=autoconf
+
+=cut
+
+. $MUNIN_LIBDIR/plugins/plugin.sh
+
+is_multigraph "$@"
+
+user_bandwidth_config()
+{
+    echo "graph_order down up"
+    echo 'graph_args --base 1000'
+    echo 'graph_vlabel bits up (-) / down (+) per ${graph_period}'
+    echo 'graph_category network'
+    echo 'down.label received'
+    echo 'down.type DERIVE'
+    echo 'down.graph no'
+    echo 'down.cdef down,8,*'
+    echo 'down.min 0'
+    echo 'up.label bps'
+    echo 'up.type DERIVE'
+    echo 'up.negative down'
+    echo 'up.cdef up,8,*'
+    echo 'up.min 0'
+}
+
+connected_users_config()
+{
+    echo 'graph_args -l 0 --base 1000'
+    echo 'graph_vlabel l2tpns users'
+    echo 'graph_category network'
+    echo 'graph_order connected ipv6'
+    echo 'connected.label total users'
+    echo 'connected.type GAUGE'
+    echo 'connected.draw AREA'
+    echo 'ipv6.label IPv6-capable users'
+    echo 'ipv6.type GAUGE'
+    echo 'ipv6.draw LINE'
+}
+
+# Returns one line for each user: <login> <IPv6?> <down> <up>
+parse_l2tpns_telnet()
+{
+  printf "show session\r\nlogout\r\n" | nc localhost 23 | awk '/^ / { if ($4 != "Username") print $4, $9, $11, $12; } '
+}
+
+list_users()
+{
+  printf "show session\r\nlogout\r\n" | nc localhost 23 | awk '/^ / { if ($4 != "Username") print $4; } '
+}
+
+case $1 in
+    autoconf)
+        paths="/usr/bin /usr/sbin /bin /sbin /usr/local/bin /usr/local/sbin"
+        for path in $paths; do
+	    if [ -r "$path/l2tpns" ]; then
+		echo yes
+		exit 0
+            fi
+        done
+	echo "no (no l2tpns found)"
+	exit 0
+        ;;
+    config)
+        echo "multigraph l2tpns_users"
+        echo "graph_title Users connected to l2tpns "
+        connected_users_config
+        # Bandwidth graphs for each user
+        while read user; do
+            echo "multigraph l2tpns_users.bandwidth_$(clean_fieldname $user)"
+            echo "graph_title Bandwidth usage for user $user "
+            user_bandwidth_config
+        done < <(list_users)
+        exit 0
+        ;;
+esac
+
+total_users=0
+ipv6_users=0
+while read user ipv6 down up; do
+    total_users=$((total_users + 1))
+    [ "$ipv6" = "Y" ] && ipv6_users=$((ipv6_users + 1))
+    echo "multigraph l2tpns_users.bandwidth_$(clean_fieldname $user)"
+    echo "down.value ${down}"
+    echo "up.value ${up}"
+done < <(parse_l2tpns_telnet)
+
+echo "multigraph l2tpns_users"
+echo "connected.value ${total_users}"
+echo "ipv6.value ${ipv6_users}"
